@@ -28,4 +28,4 @@ IEEE-CIS Fraud Detection Dataset
 | Neural Network | ~0.93 |
 
 ## 👤 Author
-Votre Nom - TEK-UP University - PFE 2025
+Hamza Chaabene - TEK-UP University - PFE 2025
