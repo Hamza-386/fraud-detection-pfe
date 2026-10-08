@@ -6,6 +6,7 @@ Run from the project root (so .streamlit/config.toml is used):
     streamlit run dashboard/app.py
 """
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +14,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from dotenv import load_dotenv
+
+# Same .env as the API (project root): the API key is read on the
+# server side and never sent to the browser.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+ENV_API_KEY = os.getenv("FRAUD_API_KEY", "")
+DEFAULT_API_URL = os.getenv("FRAUD_API_URL", "http://localhost:8000")
 
 st.set_page_config(
     page_title="Fraud Detection Dashboard",
@@ -166,11 +174,20 @@ EDITABLE_FIELDS = [
 st.sidebar.title("🛡️ Fraud Detection")
 st.sidebar.caption("PFE project — Capgemini / TEK-UP")
 st.sidebar.subheader("Connection")
-api_url = st.sidebar.text_input("API address", value="http://localhost:8000")
-api_key = st.sidebar.text_input(
-    "API key", value="", type="password",
-    help="The value of FRAUD_API_KEY in the API's .env file.",
-)
+api_url = st.sidebar.text_input("API address", value=DEFAULT_API_URL)
+if ENV_API_KEY:
+    # Never pass ENV_API_KEY as a widget value: it would be sent to the
+    # browser. It stays on the server; the field below is only an override.
+    st.sidebar.caption("🔒 API key loaded from the `.env` file")
+    with st.sidebar.expander("Use a different key"):
+        override_key = st.text_input("API key", value="", type="password")
+    api_key = override_key or ENV_API_KEY
+else:
+    api_key = st.sidebar.text_input(
+        "API key", value="", type="password",
+        help="Or set FRAUD_API_KEY in the project's .env file to skip "
+             "this step.",
+    )
 AUTH_HEADERS = {"X-API-Key": api_key} if api_key else {}
 
 
@@ -298,8 +315,9 @@ with tab_overview:
     with st.expander("❓ How to use this dashboard", expanded=True):
         st.markdown(
             """
-            1. **Connect** — in the sidebar, enter the API key. The status
-               box turns green when the API is ready.
+            1. **Connect** — automatic: the API key is read from the
+               project's `.env` file. The status box in the sidebar turns
+               green when the API is ready.
             2. **Check a transaction** — pick an example, adjust its details
                if you want, and click **Check transaction** to see the
                decision and why it was made.

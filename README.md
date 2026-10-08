@@ -80,8 +80,11 @@ export FRAUD_API_KEY="votre-cle-secrete"
 utilise une clé par défaut non sécurisée (`dev-only-change-me`) — à
 ne jamais utiliser hors développement local.
 
-Vous devrez saisir la même clé dans la barre latérale du dashboard
-Streamlit (champ "Clé API").
+Le dashboard Streamlit lit automatiquement la même clé dans `.env`
+(côté serveur : elle n'est jamais envoyée au navigateur), il n'y a
+donc rien à saisir. Une autre clé peut être utilisée via « Use a
+different key » dans la barre latérale. L'adresse de l'API peut
+aussi être définie dans `.env` avec `FRAUD_API_URL`.
 
 ## 🚀 Étape 3 : Lancer l'API
 
