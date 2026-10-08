@@ -1,0 +1,1 @@
+{"production_model": "stacking", "catboost": 0.806, "catboost_profit_optimized": 0.494, "catboost_profit_optimized_cv_oof": 0.393, "lgb": 0.5899999999999997, "lgb_profit_optimized": 0.33, "xgb": 0.6399999999999997, "autoencoder": 0.9959539135659963, "stacking_profit_optimized": 0.046, "stacking": 0.315}

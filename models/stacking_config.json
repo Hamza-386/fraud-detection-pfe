@@ -1,0 +1,16 @@
+{
+  "base_models": {
+    "lgb": "stack_lgb_model.pkl",
+    "xgb": "stack_xgb_model.pkl",
+    "catboost": "catboost_model.cbm"
+  },
+  "meta_model": "stack_meta_model.pkl",
+  "meta_input_order": [
+    "lgb",
+    "xgb",
+    "catboost"
+  ],
+  "feature_names": "feature_names.json",
+  "preprocessing": "preprocessing.pkl",
+  "threshold_key": "stacking_profit_optimized"
+}

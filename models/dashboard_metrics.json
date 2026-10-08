@@ -1,0 +1,178 @@
+{
+  "source": "notebook run 2026-10-08 (values transcribed; CELL 18 regenerates this file)",
+  "generated_at": "2026-10-08T13:24:00+00:00",
+  "production_model": "stacking",
+  "production_label": "Stacking V2 (LightGBM + XGBoost + CatBoost)",
+  "costs": {
+    "fraud_caught": 500,
+    "false_alert": 10,
+    "max_alert_rate": 0.05
+  },
+  "test_set": {
+    "n_transactions": 118108,
+    "n_frauds": 4064
+  },
+  "decision_thresholds": {
+    "auto_approve_below": 0.046,
+    "auto_block_at_or_above": 0.315
+  },
+  "models": [
+    {
+      "name": "Stacking_V2",
+      "role": "production",
+      "threshold_type": "profit (val, ≤5%)",
+      "AUC": 0.9126,
+      "Recall": 0.6205708661417323,
+      "Precision": 0.42818336162988113,
+      "F1": 0.5067309624271651
+    },
+    {
+      "name": "CatBoost_TE",
+      "role": "alternative",
+      "threshold_type": "profit (val, ≤5%)",
+      "AUC": 0.897,
+      "Recall": 0.5848917322834646,
+      "Precision": 0.44132937244708503,
+      "F1": 0.503068783068783
+    },
+    {
+      "name": "Imbalance_Undersampling",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9097,
+      "Recall": 0.4653,
+      "Precision": 0.5325,
+      "F1": 0.4967
+    },
+    {
+      "name": "LightGBM",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9057,
+      "Recall": 0.4496,
+      "Precision": 0.6229,
+      "F1": 0.5222
+    },
+    {
+      "name": "LightGBM_ProfitOptimized",
+      "role": "reference",
+      "threshold_type": "profit (val, ≤5%)",
+      "AUC": 0.9057,
+      "Recall": 0.5775,
+      "Precision": 0.3948,
+      "F1": 0.469
+    },
+    {
+      "name": "CatBoost",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9045,
+      "Recall": 0.4409,
+      "Precision": 0.547,
+      "F1": 0.4883
+    },
+    {
+      "name": "Imbalance_SMOTE",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9039,
+      "Recall": 0.4798,
+      "Precision": 0.509,
+      "F1": 0.494
+    },
+    {
+      "name": "XGBoost",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.8982,
+      "Recall": 0.4427,
+      "Precision": 0.5869,
+      "F1": 0.5047
+    },
+    {
+      "name": "Imbalance_ClassWeight",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.8962,
+      "Recall": 0.4326,
+      "Precision": 0.6023,
+      "F1": 0.5035
+    },
+    {
+      "name": "NeuralNetwork",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.8453,
+      "Recall": 0.4011,
+      "Precision": 0.4398,
+      "F1": 0.4196
+    },
+    {
+      "name": "Baseline_LogisticRegression",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.8274,
+      "Recall": 0.45,
+      "Precision": 0.2391,
+      "F1": 0.3123
+    },
+    {
+      "name": "AutoEncoder",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.7567,
+      "Recall": 0.3137,
+      "Precision": 0.162,
+      "F1": 0.2137
+    }
+  ],
+  "business": [
+    {
+      "name": "Stacking_V2",
+      "role": "production",
+      "threshold": 0.046,
+      "alert_rate": 0.04986961086463237,
+      "tp": 2522,
+      "fp": 3368,
+      "fn": 1542,
+      "net_benefit": 1227320
+    },
+    {
+      "name": "CatBoost_TE",
+      "role": "alternative",
+      "threshold": 0.494,
+      "alert_rate": 0.045602330070782675,
+      "tp": 2377,
+      "fp": 3009,
+      "fn": 1687,
+      "net_benefit": 1158410
+    },
+    {
+      "name": "LightGBM",
+      "role": "reference",
+      "threshold": 0.33,
+      "alert_rate": 0.05033528634808819,
+      "tp": 2347,
+      "fp": 3598,
+      "fn": 1717,
+      "net_benefit": 1137520
+    },
+    {
+      "name": "XGBoost",
+      "role": "reference",
+      "threshold": 0.42,
+      "alert_rate": 0.05013208250076202,
+      "tp": 2293,
+      "fp": 3628,
+      "fn": 1771,
+      "net_benefit": 1110220
+    }
+  ],
+  "bootstrap_vs_alternative": {
+    "alternative": "CatBoost_TE",
+    "n_resamples": 30,
+    "mean_diff": 67115.0,
+    "ci_low": 52672.0,
+    "ci_high": 79305.0
+  }
+}
