@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Regles specifiques au projet Fraud Detection ---
+models/*.cbm
+models/*.pkl
+models/*.keras
+
+# Anciennes versions des modèles (sauvegardes locales)
+models_backup_*/

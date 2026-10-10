@@ -1,0 +1,178 @@
+{
+  "source": "notebook CELL 18",
+  "generated_at": "2026-10-10T03:31:42+00:00",
+  "production_model": "stacking",
+  "production_label": "Stacking V2 (LightGBM + XGBoost + CatBoost)",
+  "costs": {
+    "fraud_caught": 500,
+    "false_alert": 10,
+    "max_alert_rate": 0.05
+  },
+  "test_set": {
+    "n_transactions": 118108,
+    "n_frauds": 4064
+  },
+  "decision_thresholds": {
+    "auto_approve_below": 0.047,
+    "auto_block_at_or_above": 0.262
+  },
+  "models": [
+    {
+      "name": "Stacking_V2",
+      "role": "production",
+      "threshold_type": "profit (val, ≤5%)",
+      "AUC": 0.9179676496165867,
+      "Recall": 0.6210629921259843,
+      "Precision": 0.4333791208791209,
+      "F1": 0.5105177993527509
+    },
+    {
+      "name": "CatBoost_TE",
+      "role": "alternative",
+      "threshold_type": "profit (val, ≤5%)",
+      "AUC": 0.9065279719534968,
+      "Recall": 0.593503937007874,
+      "Precision": 0.4446902654867257,
+      "F1": 0.5084317032040472
+    },
+    {
+      "name": "Baseline_LogisticRegression",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.8273816575613032,
+      "Recall": 0.4500492125984252,
+      "Precision": 0.23914748953974896,
+      "F1": 0.3123292349726776
+    },
+    {
+      "name": "Imbalance_ClassWeight",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.8962277035566049,
+      "Recall": 0.4325787401574803,
+      "Precision": 0.6022610483042138,
+      "F1": 0.5035085206931118
+    },
+    {
+      "name": "Imbalance_SMOTE",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.903861296316907,
+      "Recall": 0.47982283464566927,
+      "Precision": 0.5090054815974941,
+      "F1": 0.49398353388220395
+    },
+    {
+      "name": "Imbalance_Undersampling",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9097003816492157,
+      "Recall": 0.4653051181102362,
+      "Precision": 0.5325260490002817,
+      "F1": 0.49665134602757716
+    },
+    {
+      "name": "LightGBM",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9016634854222585,
+      "Recall": 0.4812992125984252,
+      "Precision": 0.5638512539636783,
+      "F1": 0.5193150139386699
+    },
+    {
+      "name": "XGBoost",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9096713779158175,
+      "Recall": 0.4498031496062992,
+      "Precision": 0.5762925598991173,
+      "F1": 0.5052515201768933
+    },
+    {
+      "name": "CatBoost",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.9025934237600517,
+      "Recall": 0.45177165354330706,
+      "Precision": 0.526829268292683,
+      "F1": 0.4864220426546563
+    },
+    {
+      "name": "LightGBM_ProfitOptimized",
+      "role": "reference",
+      "threshold_type": "profit (val, ≤5%)",
+      "AUC": 0.9016634854222585,
+      "Recall": 0.5733267716535433,
+      "Precision": 0.4099225897255454,
+      "F1": 0.47804677882642593
+    },
+    {
+      "name": "NeuralNetwork",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.8519102837294185,
+      "Recall": 0.4170767716535433,
+      "Precision": 0.3885832187070151,
+      "F1": 0.4023261333966295
+    },
+    {
+      "name": "AutoEncoder",
+      "role": "reference",
+      "threshold_type": "F1 (val)",
+      "AUC": 0.759269478840464,
+      "Recall": 0.265748031496063,
+      "Precision": 0.17023959646910466,
+      "F1": 0.207532667179093
+    }
+  ],
+  "business": [
+    {
+      "name": "Stacking_V2",
+      "role": "production",
+      "threshold": 0.047,
+      "alert_rate": 0.04931080028448539,
+      "tp": 2524,
+      "fp": 3300,
+      "fn": 1540,
+      "net_benefit": 1229000
+    },
+    {
+      "name": "CatBoost_TE",
+      "role": "alternative",
+      "threshold": 0.496,
+      "alert_rate": 0.045924069495715786,
+      "tp": 2412,
+      "fp": 3012,
+      "fn": 1652,
+      "net_benefit": 1175880
+    },
+    {
+      "name": "LightGBM",
+      "role": "reference",
+      "threshold": 0.33,
+      "alert_rate": 0.04812544450841603,
+      "tp": 2330,
+      "fp": 3354,
+      "fn": 1734,
+      "net_benefit": 1131460
+    },
+    {
+      "name": "XGBoost",
+      "role": "reference",
+      "threshold": 0.42000000000000004,
+      "alert_rate": 0.05163917770176449,
+      "tp": 2357,
+      "fp": 3742,
+      "fn": 1707,
+      "net_benefit": 1141080
+    }
+  ],
+  "bootstrap_vs_alternative": {
+    "alternative": "CatBoost_TE",
+    "n_resamples": 30,
+    "mean_diff": 50432.0,
+    "ci_low": 37304.0,
+    "ci_high": 64088.49999999999
+  }
+}
