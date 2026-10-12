@@ -495,7 +495,10 @@ with tab_check:
                 )
             fig_wi.add_trace(go.Scatter(
                 x=grid, y=scores, mode="lines+markers",
-                line={"color": "#E2E8F0", "width": 3}, marker={"size": 6},
+                # curve colour must contrast with the theme background
+                line={"color": "#0F172A" if st.get_option("theme.base") == "light"
+                      else "#E2E8F0", "width": 3},
+                marker={"size": 6},
                 hovertemplate=f"{whatif_label}: %{{x}}<br>Risk score: %{{y:.1%}}<extra></extra>",
                 showlegend=False,
             ))
