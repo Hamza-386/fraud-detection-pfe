@@ -1,0 +1,61 @@
+{
+  "thresholds": {
+    "review": 0.047,
+    "block": 0.262
+  },
+  "n_test": 118108,
+  "n_frauds": 4064,
+  "results": [
+    {
+      "label_delay_days": null,
+      "labels_received": 0,
+      "auc": 0.918,
+      "alert_rate": 0.0493,
+      "frauds_caught": 2524,
+      "false_alarms": 3300,
+      "recall": 0.6211,
+      "net_benefit": 1229000,
+      "auto_block": 3076,
+      "equal_capacity": {
+        "alerts": 5824,
+        "frauds_caught": 2524,
+        "false_alarms": 3300,
+        "net_benefit": 1229000
+      }
+    },
+    {
+      "label_delay_days": 30,
+      "labels_received": 32677,
+      "auc": 0.9202,
+      "alert_rate": 0.0495,
+      "frauds_caught": 2544,
+      "false_alarms": 3297,
+      "recall": 0.626,
+      "net_benefit": 1239030,
+      "auto_block": 3096,
+      "equal_capacity": {
+        "alerts": 5824,
+        "frauds_caught": 2541,
+        "false_alarms": 3283,
+        "net_benefit": 1237670
+      }
+    },
+    {
+      "label_delay_days": 7,
+      "labels_received": 100352,
+      "auc": 0.9407,
+      "alert_rate": 0.0518,
+      "frauds_caught": 2781,
+      "false_alarms": 3342,
+      "recall": 0.6843,
+      "net_benefit": 1357080,
+      "auto_block": 3366,
+      "equal_capacity": {
+        "alerts": 5824,
+        "frauds_caught": 2755,
+        "false_alarms": 3069,
+        "net_benefit": 1346810
+      }
+    }
+  ]
+}

@@ -6,7 +6,9 @@ Run from the project root (so .streamlit/config.toml is used):
     streamlit run dashboard/app.py
 """
 import json
+import math
 import os
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -241,8 +243,8 @@ def call_api(endpoint: str, payload: dict, timeout: int = 15):
 st.title("🛡️ Fraud Detection Dashboard")
 st.caption(f"IEEE-CIS card transactions · Model in production: **{PRODUCTION_MODEL}**")
 
-tab_overview, tab_check, tab_compare, tab_explore = st.tabs(
-    ["🏠 Overview", "🔍 Check a transaction",
+tab_overview, tab_live, tab_check, tab_compare, tab_explore = st.tabs(
+    ["🏠 Overview", "⚡ Live stream", "🔍 Check a transaction",
      "📊 Model comparison", "📁 Explore data"]
 )
 
@@ -318,15 +320,220 @@ with tab_overview:
             1. **Connect** — automatic: the API key is read from the
                project's `.env` file. The status box in the sidebar turns
                green when the API is ready.
-            2. **Check a transaction** — pick an example, adjust its details
+            2. **Live stream** — send real transactions to the API one by
+               one, in the order they happened, and watch the decisions,
+               the share of flagged transactions and the response time.
+            3. **Check a transaction** — pick an example, adjust its details
                if you want, and click **Check transaction** to see the
                decision and why it was made.
-            3. **Model comparison** — see why this model was chosen: it
+            4. **Model comparison** — see why this model was chosen: it
                saves the most money for the same review workload.
-            4. **Explore data** — upload a CSV extract of the dataset to see
+            5. **Explore data** — upload a CSV extract of the dataset to see
                fraud rates and amounts.
             """
         )
+
+# ============================================
+# TAB: Live stream (real-time scoring of raw transactions)
+# ============================================
+STREAM_PATH = Path(__file__).resolve().parent.parent / "data" / "stream_sample.csv.gz"
+FEEDBACK_OPTIONS = {
+    "Not sent (history frozen, as in the notebook)": None,
+    "Confirmed 30 days after the purchase": 30,
+    "Confirmed 7 days after the purchase": 7,
+}
+
+
+@st.cache_data
+def load_stream(path: str, mtime: float) -> pd.DataFrame:
+    return pd.read_csv(path)
+
+
+def raw_payload(row: pd.Series) -> dict:
+    """One raw transaction as JSON (missing values -> null, no label)."""
+    out = {}
+    for k, v in row.items():
+        if k == "isFraud":
+            continue
+        if isinstance(v, float) and v != v:
+            out[k] = None
+        else:
+            out[k] = v.item() if hasattr(v, "item") else v
+    return out
+
+
+def stream_time(dt: int) -> str:
+    return f"day {dt // 86400}, {dt % 86400 // 3600:02d}:{dt % 3600 // 60:02d}"
+
+
+with tab_live:
+    st.subheader("Live stream")
+    st.markdown(
+        "Transactions arrive **one by one, in the order they happened**, as a "
+        "payment system would send them. Each one is sent **raw** to the API, "
+        "which computes all the model's inputs itself from the history of the "
+        "card and of the customer, scores the transaction, then adds it to "
+        "that history."
+    )
+    if not STREAM_PATH.exists():
+        st.info("Stream file not found: run `python scripts/export_stream_sample.py`.")
+    else:
+        stream = load_stream(str(STREAM_PATH), STREAM_PATH.stat().st_mtime)
+        live = st.session_state.setdefault(
+            "live", {"pos": 0, "rows": [], "pending": [], "labels_sent": 0, "skipped": 0})
+
+        c1, c2 = st.columns([1, 2])
+        n_send = c1.select_slider("Transactions to send", [20, 50, 100, 200, 500], value=100)
+        fb_label = c2.radio(
+            "Confirmed fraud labels (chargebacks)", list(FEEDBACK_OPTIONS),
+            help="In reality a fraud is confirmed days after the purchase. When "
+                 "labels are sent back (/feedback), the customer's and the card's "
+                 "past fraud rates are updated for their next purchases.",
+        )
+        delay_days = FEEDBACK_OPTIONS[fb_label]
+        b1, b2, _ = st.columns([1, 1, 3])
+        go_clicked = b1.button(f"▶ Send next {n_send}", type="primary",
+                               disabled=live["pos"] >= len(stream))
+        if b2.button("↺ Clear the view"):
+            st.session_state["live"] = {"pos": 0, "rows": [], "pending": [],
+                                        "labels_sent": 0, "skipped": 0}
+            st.rerun()
+        st.caption(
+            f"{live['pos']:,} / {len(stream):,} transactions of the stream sent. "
+            "The API keeps its history: restart it to replay the stream from the "
+            "start (the first transactions of the test period, right after the "
+            "saved history)."
+        )
+
+        kpi = st.empty()
+        chart_box = st.empty()
+        table_box = st.empty()
+
+        def render():
+            rows = live["rows"]
+            if not rows:
+                kpi.info("Press **Send** to start the stream.")
+                return
+            df_l = pd.DataFrame(rows)
+            flagged = df_l["decision"] != "auto_approve"
+            frauds = df_l["actual"] == 1
+            lat = df_l["round_trip_ms"]
+            with kpi.container():
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Transactions scored", f"{len(df_l):,}")
+                k2.metric("Flagged (review + block)", f"{flagged.mean():.1%}",
+                          f"limit {COSTS['max_alert_rate']:.0%}", delta_color="off")
+                k3.metric("Frauds caught", f"{int((flagged & frauds).sum())} / {int(frauds.sum())}",
+                          help="Frauds of the stream sent for review or blocked. "
+                               "The actual outcome is only known later; it is shown "
+                               "here to evaluate the stream.")
+                k4.metric("Response time (median)", f"{lat.median():.0f} ms",
+                          f"95%: {lat.quantile(0.95):.0f} ms", delta_color="off",
+                          help="Round trip dashboard -> API -> dashboard, including "
+                               "the computation of the 512 features.")
+                if live["labels_sent"] or live["skipped"]:
+                    st.caption(f"Labels sent back: {live['labels_sent']:,} · "
+                               f"already scored by the API (skipped): {live['skipped']:,}")
+            fig = go.Figure()
+            for code, info in DECISIONS.items():
+                part = df_l[df_l["decision"] == code]
+                fig.add_trace(go.Scatter(
+                    x=part["n"], y=part["score"], mode="markers", name=info["title"],
+                    marker={"color": info["color"], "size": 6},
+                    hovertemplate="Transaction %{x}<br>Risk score %{y:.1%}<extra></extra>"))
+            fr = df_l[frauds]
+            fig.add_trace(go.Scatter(
+                x=fr["n"], y=fr["score"], mode="markers", name="Actually fraud",
+                marker={"symbol": "circle-open", "size": 12, "color": "#E2E8F0",
+                        "line": {"width": 1.5}}, hoverinfo="skip"))
+            for y, name in [(THRESHOLDS["auto_approve_below"], "review from"),
+                            (THRESHOLDS["auto_block_at_or_above"], "block from")]:
+                fig.add_hline(y=y, line_dash="dot", line_color="#94A3B8",
+                              annotation_text=f"{name} {y:.1%}",
+                              annotation_position="top left")
+            fig.update_layout(
+                height=330, margin={"t": 20, "b": 30, "l": 10, "r": 10},
+                xaxis_title="Transactions, in order of arrival",
+                yaxis={"title": "Fraud risk score", "type": "log",
+                       "tickformat": ".1%",
+                       "range": [math.log10(df_l["score"].min()) - 0.1, 0.02]},
+                legend={"orientation": "h", "y": -0.25})
+            st.session_state["live_chart_n"] = st.session_state.get("live_chart_n", 0) + 1
+            chart_box.plotly_chart(fig, use_container_width=True,
+                                   key=f"live_chart_{st.session_state['live_chart_n']}")
+            last = df_l.tail(12).iloc[::-1]
+            table_box.dataframe(
+                pd.DataFrame({
+                    "time": last["time"],
+                    "amount ($)": last["amount"].map("{:,.2f}".format),
+                    "product": last["product"],
+                    "customer's past purchases": last["history"],
+                    "risk score": last["score"].map("{:.1%}".format),
+                    "decision": last["decision"].map(
+                        lambda c: f"{DECISIONS[c]['icon']} {DECISIONS[c]['title']}"),
+                    "actual (known later)": last["actual"].map({1: "fraud", 0: "legitimate"}),
+                    "time (ms)": last["round_trip_ms"].map("{:.0f}".format),
+                }),
+                use_container_width=True, hide_index=True)
+
+        if go_clicked:
+            progress = st.progress(0.0)
+            start = live["pos"]
+            end = min(start + n_send, len(stream))
+            session = requests.Session()
+            error = None
+            for i in range(start, end):
+                row = stream.iloc[i]
+                raw = raw_payload(row)
+                now = raw["TransactionDT"]
+                # labels whose confirmation date has passed are sent back first
+                if delay_days is not None:
+                    due = [p for p in live["pending"] if p[0] <= now]
+                    live["pending"] = [p for p in live["pending"] if p[0] > now]
+                    for _, tid, lab in due:
+                        session.post(f"{api_url}/feedback", headers=AUTH_HEADERS,
+                                     json={"transaction_id": tid, "is_fraud": lab}, timeout=10)
+                        live["labels_sent"] += 1
+                try:
+                    t0 = time.perf_counter()
+                    r = session.post(f"{api_url}/predict/raw", headers=AUTH_HEADERS,
+                                     json={"transaction": raw}, timeout=10)
+                    rtt = (time.perf_counter() - t0) * 1000
+                except requests.exceptions.RequestException:
+                    error = "Cannot reach the API. Start it, then check the address in the sidebar."
+                    break
+                live["pos"] = i + 1
+                if r.status_code == 409:
+                    live["skipped"] += 1
+                    continue
+                if r.status_code == 503:
+                    error = ("The API's real-time engine is not loaded: run "
+                             "`python scripts/build_online_state.py`, then restart the API.")
+                    break
+                if r.status_code != 200:
+                    error = f"API error {r.status_code}: {r.text[:200]}"
+                    break
+                res = r.json()
+                live["rows"].append({
+                    "n": len(live["rows"]) + 1, "time": stream_time(now),
+                    "amount": raw["TransactionAmt"], "product": raw.get("ProductCD"),
+                    "history": res["customer"]["previous_transactions"],
+                    "score": max(res["fraud_probability"], 1e-4),
+                    "decision": res["decision"], "actual": int(row["isFraud"]),
+                    "round_trip_ms": rtt,
+                })
+                if delay_days is not None:
+                    live["pending"].append((now + delay_days * 86400,
+                                            raw["TransactionID"], int(row["isFraud"])))
+                progress.progress((i + 1 - start) / (end - start))
+                if (i + 1) % 10 == 0:
+                    render()
+            progress.empty()
+            live["error"] = error
+            st.rerun()   # refresh the counter and the Send button
+        if live.get("error"):
+            st.error(f"❌ {live.pop('error')}")
+        render()
 
 # ============================================
 # TAB 2: Check a transaction
@@ -605,7 +812,7 @@ with tab_check:
                 shown = text_cols + [c for c in ("TransactionAmt",) if c in df_batch.columns]
                 st.dataframe(
                     pd.concat([df_batch[shown].reset_index(drop=True), results_only], axis=1)
-                    .style.format({"risk score": "{:.1%}"}),
+                    .style.format({"risk score": "{:.1%}", "TransactionAmt": "{:,.2f}"}),
                     use_container_width=True, hide_index=True,
                 )
                 st.download_button(

@@ -1,0 +1,34 @@
+{
+  "n_test": 118108,
+  "feature_latency_ms": {
+    "p50": 0.4177000009804033,
+    "p95": 0.8214650002628326,
+    "p99": 1.0573929970269085
+  },
+  "reference_vectors_max_rel_diff": 2.247216177031497e-09,
+  "metrics": {
+    "Stacking_V2": {
+      "auc_notebook": 0.9179676496165867,
+      "auc_online": 0.917968556893499,
+      "tp_notebook": 2524,
+      "tp_online": 2524,
+      "fp_notebook": 3300,
+      "fp_online": 3300
+    },
+    "CatBoost_TE": {
+      "auc_notebook": 0.9065279719534968,
+      "auc_online": 0.9065279719534967,
+      "tp_notebook": 2412,
+      "tp_online": 2412,
+      "fp_notebook": 3012,
+      "fp_online": 3012
+    }
+  },
+  "state": {
+    "transactions_seen": 590540,
+    "cards": 13553,
+    "customers": 222477,
+    "customers_with_label_history": 168122,
+    "pending_labels": 118108
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "transactions": 5000,
+  "feedback_delay_days": null,
+  "labels_sent": 0,
+  "throughput_tx_per_s": 68.5,
+  "latency_ms": {
+    "round_trip": {
+      "p50": 13.4,
+      "p95": 18.31,
+      "p99": 40.1
+    },
+    "server_total": {
+      "p50": 7.74,
+      "p95": 11.04
+    },
+    "server_features": {
+      "p50": 0.82,
+      "p95": 1.03
+    }
+  },
+  "decisions": {
+    "auto_approve": 4739,
+    "manual_review": 111,
+    "auto_block": 150
+  },
+  "frauds": 228,
+  "auc": 0.9361,
+  "frauds_caught": 130,
+  "false_alarms": 131,
+  "max_abs_diff_vs_offline_replay": 0.0
+}
