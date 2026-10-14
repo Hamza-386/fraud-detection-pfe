@@ -40,9 +40,12 @@ import json
 import logging
 import math
 import os
+import pickle
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import joblib
 import numpy as np
@@ -103,6 +106,14 @@ MODELS_DIR = os.getenv("MODELS_DIR", os.path.join(
 DEFAULT_API_KEY = "dev-only-change-me"
 API_KEY = os.getenv("FRAUD_API_KEY", DEFAULT_API_KEY)
 MAX_BATCH_SIZE = 500
+# Temps réel : état en ligne (historique par carte / client) construit
+# par scripts/build_online_state.py. Absent -> /predict/raw indisponible.
+ONLINE_STATE_PATH = os.getenv(
+    "FRAUD_ONLINE_STATE", os.path.join(MODELS_DIR, "online_state.pkl")
+)
+# /predict/raw est appelé pour CHAQUE paiement par le serveur de
+# paiement (une seule IP) : sa limite est celle d'un flux, pas d'un humain.
+STREAM_RATE_LIMIT = os.getenv("FRAUD_STREAM_RATE_LIMIT", "6000/minute")
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -121,6 +132,10 @@ stack_base_models: Dict[str, object] = {}   # "lgb" / "xgb" (CatBoost = model)
 stack_meta_model = None
 stack_input_order: List[str] = []
 default_values: Dict[str, float] = {}       # valeurs de complétion des features
+# Moteur de features en ligne (realtime.engine.OnlineFeatureEngine) ; son
+# état est partagé entre requêtes, d'où le verrou.
+online_engine = None
+engine_lock = threading.Lock()
 
 # Bornes du système de décision à 3 niveaux (calculées au démarrage
 # à partir de thresholds.json, avec repli si les clés sont absentes)
@@ -280,6 +295,23 @@ async def lifespan(_app: FastAPI):
     explainer = shap.TreeExplainer(model)
     print("✅ Explainer SHAP initialisé (TreeExplainer sur CatBoost)")
 
+    global online_engine
+    if os.path.exists(ONLINE_STATE_PATH):
+        with open(ONLINE_STATE_PATH, "rb") as f:
+            online_engine = pickle.load(f)
+        if list(online_engine.feature_names) != list(feature_names):
+            raise RuntimeError(
+                "❌ online_state.pkl ne correspond pas à feature_names.json : "
+                "relancez scripts/build_online_state.py."
+            )
+        print(f"✅ Moteur temps réel chargé : {online_engine.state_summary()}")
+    else:
+        online_engine = None
+        print(
+            f"ℹ️  {ONLINE_STATE_PATH} absent : /predict/raw désactivé "
+            f"(lancez scripts/build_online_state.py)."
+        )
+
     yield  # L'API est prête et sert les requêtes ici
 
     # --- Code d'arrêt (shutdown) ---
@@ -401,6 +433,50 @@ class BatchTransactions(BaseModel):
         return v
 
 
+RAW_REQUIRED = ("TransactionID", "TransactionDT", "TransactionAmt", "card1")
+
+
+class RawTransaction(BaseModel):
+    """
+    Une transaction BRUTE, telle qu'elle arrive du système de paiement :
+    colonnes de train_transaction.csv + train_identity.csv (sans isFraud).
+    Les colonnes absentes ou nulles sont traitées comme manquantes, comme
+    dans le notebook. Toutes les features (UID, historique de la carte et
+    du client, target encoding, ...) sont calculées en ligne par l'API.
+    """
+    transaction: Dict[str, Union[int, float, str, None]] = Field(
+        ...,
+        examples=[{"TransactionID": 3577540, "TransactionDT": 15811131,
+                   "TransactionAmt": 59.0, "ProductCD": "W", "card1": 9500,
+                   "card2": 321.0, "card4": "visa", "card6": "debit",
+                   "addr1": 204.0, "P_emaildomain": "gmail.com"}],
+    )
+
+    @field_validator("transaction")
+    @classmethod
+    def _validate_raw(cls, v):
+        for key in RAW_REQUIRED:
+            if v.get(key) is None:
+                raise ValueError(f"Champ obligatoire manquant : '{key}'.")
+        for key in ("TransactionDT", "TransactionAmt", "card1"):
+            val = v[key]
+            if isinstance(val, str) or not math.isfinite(val):
+                raise ValueError(f"'{key}' doit être un nombre fini.")
+        if v["TransactionAmt"] < 0 or v["TransactionDT"] < 0:
+            raise ValueError("TransactionAmt et TransactionDT doivent être >= 0.")
+        for key, val in v.items():
+            if isinstance(val, float) and not math.isfinite(val):
+                raise ValueError(f"Valeur non finie pour '{key}'.")
+        return v
+
+
+class LabelFeedback(BaseModel):
+    """Label confirmé a posteriori (ex : rétrofacturation), qui met à
+    jour l'historique de fraude du client, de la carte, ..."""
+    transaction_id: Union[int, str]
+    is_fraud: int = Field(..., ge=0, le=1)
+
+
 # ============================================
 # Fonctions utilitaires
 # ============================================
@@ -421,20 +497,34 @@ def _build_batch_matrix(list_feats: List[Dict[str, float]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=feature_names)
 
 
-def _predict_proba(X: pd.DataFrame) -> np.ndarray:
+def _base_predict(base_model, A: np.ndarray) -> np.ndarray:
+    """Probabilité de fraude d'un modèle de base via son booster natif
+    (LightGBM : booster_.predict ; XGBoost : inplace_predict), sans la
+    surcouche scikit-learn. Résultat identique à predict_proba[:, 1]."""
+    if hasattr(base_model, "booster_"):          # LGBMClassifier
+        return base_model.booster_.predict(A)
+    if hasattr(base_model, "get_booster"):       # XGBClassifier
+        return base_model.get_booster().inplace_predict(A)
+    return base_model.predict_proba(A)[:, 1]
+
+
+def _predict_proba(X: Union[pd.DataFrame, np.ndarray]) -> np.ndarray:
     """
     Probabilité de fraude du modèle de production.
     - "catboost" : sortie de CatBoost.
     - "stacking" : probabilités des 3 modèles de base, combinées par
       le méta-modèle dans l'ordre de stacking_config.json.
     """
-    proba_cb = model.predict_proba(X)[:, 1]
+    # Tableau numpy plutôt que DataFrame : mêmes probabilités, mais la
+    # validation pandas de LightGBM / XGBoost coûtait ~30 ms par appel.
+    A = X if isinstance(X, np.ndarray) else X.to_numpy(dtype=np.float64)
+    proba_cb = model.predict_proba(A)[:, 1]
     if production_model != "stacking":
         return proba_cb
 
     base_probas = {"catboost": proba_cb}
     for name, base_model in stack_base_models.items():
-        base_probas[name] = base_model.predict_proba(X)[:, 1]
+        base_probas[name] = _base_predict(base_model, A)
     meta_input = np.column_stack(
         [base_probas[name] for name in stack_input_order]
     ).astype(np.float64)
@@ -471,6 +561,7 @@ def health():
         "status": "ok" if model is not None else "model_not_loaded",
         "production_model": production_model,
         "n_features_expected": len(feature_names),
+        "realtime_enabled": online_engine is not None,
     }
 
 
@@ -634,3 +725,94 @@ def predict_batch(request: Request, batch: BatchTransactions):
         },
         "results": results,
     }
+
+
+# ============================================
+# Temps réel : transactions brutes
+# ============================================
+def _require_engine():
+    if model is None:
+        raise HTTPException(503, "Modèle non chargé")
+    if online_engine is None:
+        raise HTTPException(
+            503,
+            "Moteur temps réel non chargé (models/online_state.pkl absent : "
+            "lancez scripts/build_online_state.py).",
+        )
+
+
+@app.post("/predict/raw", dependencies=[Depends(verify_api_key)])
+@limiter.limit(STREAM_RATE_LIMIT)
+def predict_raw(request: Request, tx: RawTransaction):
+    """
+    Score une transaction BRUTE au moment où elle arrive. (protégé)
+
+    L'API calcule elle-même les 512 features à partir de son état en
+    ligne (historique de la carte, du client reconstitué, du domaine
+    e-mail, ...), exactement comme le notebook, puis met cet état à jour
+    avec la transaction. Aucun label n'est nécessaire à ce moment : les
+    labels arrivent plus tard via /feedback.
+    """
+    _require_engine()
+    t0 = time.perf_counter()
+    raw = tx.transaction
+    with engine_lock:
+        if raw["TransactionID"] in online_engine.pending:
+            raise HTTPException(
+                409, f"Transaction {raw['TransactionID']} déjà scorée."
+            )
+        feats, info = online_engine.process(raw, commit=True)
+    t1 = time.perf_counter()
+    proba = float(_predict_proba(online_engine.vector(feats)[None, :])[0])
+    t2 = time.perf_counter()
+    decision_info = _decision(proba)
+    _log_prediction("/predict/raw", proba, decision_info["decision"])
+
+    return {
+        "transaction_id": raw["TransactionID"],
+        "fraud_probability": round(proba, 4),
+        **decision_info,
+        "thresholds": {
+            "auto_approve_below": REVIEW_LOWER,
+            "auto_block_at_or_above": BLOCK_UPPER,
+        },
+        "customer": {
+            "previous_transactions": info["uid_history"],
+            "has_fraud_label_history": not info["is_new_customer"],
+            "past_fraud_rate": round(float(feats["uid_target_enc"]), 4),
+        },
+        "timing_ms": {
+            "features": round((t1 - t0) * 1000, 2),
+            "model": round((t2 - t1) * 1000, 2),
+            "total": round((t2 - t0) * 1000, 2),
+        },
+    }
+
+
+@app.post("/feedback", dependencies=[Depends(verify_api_key)])
+@limiter.limit(STREAM_RATE_LIMIT)
+def feedback(request: Request, fb: LabelFeedback):
+    """
+    Label confirmé d'une transaction déjà scorée par /predict/raw
+    (ex : rétrofacturation reçue quelques jours plus tard). Met à jour
+    les taux de fraude passés (target encoding) du client, de la carte,
+    de l'adresse et du domaine e-mail. (protégé)
+    """
+    _require_engine()
+    with engine_lock:
+        ok = online_engine.add_label(fb.transaction_id, fb.is_fraud)
+    if not ok:
+        raise HTTPException(
+            404, f"Transaction {fb.transaction_id} inconnue ou déjà labellisée."
+        )
+    return {"transaction_id": fb.transaction_id, "status": "label_recorded"}
+
+
+@app.get("/online/status", dependencies=[Depends(verify_api_key)])
+@limiter.limit("60/minute")
+def online_status(request: Request):
+    """État du moteur temps réel : transactions vues, cartes, clients,
+    labels en attente. (protégé)"""
+    _require_engine()
+    with engine_lock:
+        return online_engine.state_summary()
