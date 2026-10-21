@@ -112,7 +112,18 @@ FEATURE_GLOSSARY = {
     "V_top_sum": "Sum of top risk signals",
     "uid_amt_mean": "Customer's average amount",
     "Amt_vs_uid_mean": "Amount vs customer's average",
+    "card1_count": "Card's past purchases",
+    "card1_freq": "Card's past purchases",
+    "uid_count": "Customer's past purchases",
+    "uid_freq": "Customer's past purchases",
+    "addr1_count": "Past purchases from this address",
+    "addr1_freq": "Past purchases from this address",
+    "card1_unique_addr": "Addresses used with this card",
+    "card1_unique_email": "Emails used with this card",
+    "C13_high": "Count C13 above usual",
 }
+# Target-encoded columns: their value is a past fraud rate
+RATE_FEATURES = {"uid_target_enc", "card1", "card2", "addr1", "P_emaildomain"}
 # Short suffixes keep chart labels compact; explained under the chart
 ANONYMISED_KINDS = {"V": "risk signal", "C": "count", "D": "time gap", "M": "match check"}
 
@@ -123,6 +134,26 @@ def describe_feature(name: str) -> str:
     if name[:1] in ANONYMISED_KINDS and name[1:].isdigit():
         return f"{name} · {ANONYMISED_KINDS[name[0]]}"
     return name
+
+
+def describe_value(name: str, value) -> str:
+    """The feature's value as shown next to its name in the explanation."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "missing"
+    if v != v:
+        return "missing"
+    if name in RATE_FEATURES:
+        # the encoders' global mean is the value of a key with no labelled history
+        if abs(v - TYPICAL_RATE) < 5e-4:
+            return f"{v:.1%} (no fraud history)"
+        return f"{v:.1%}"
+    if name == "TransactionAmt":
+        return f"${v:,.2f}"
+    if v.is_integer():
+        return f"{v:,.0f}"
+    return f"{v:,.2f}"
 
 
 def usd(x: float) -> str:
@@ -629,11 +660,15 @@ with tab_check:
                 st.markdown("#### Why this decision?")
                 st.caption(
                     "The details that pushed the score up (red) or down "
-                    "(green) the most. Explanation from the CatBoost part "
-                    "of the model."
+                    "(green) the most, with this transaction's value, "
+                    "compared with an average transaction. Explanation from "
+                    "the CatBoost part of the model."
                 )
                 why = pd.DataFrame(res["top_contributing_features"])
-                why["detail"] = why["feature"].map(describe_feature)
+                why["detail"] = [
+                    f"{describe_feature(n)} = {describe_value(n, features.get(n))}"
+                    for n in why["feature"]
+                ]
                 why["effect_label"] = why["effect"].map({
                     "augmente_le_risque": "Raises the risk",
                     "diminue_le_risque": "Lowers the risk",
@@ -653,10 +688,15 @@ with tab_check:
                 )
                 st.plotly_chart(fig_why, use_container_width=True)
                 st.caption(
-                    "V, C, D and M details are anonymised by the dataset "
-                    "provider: V = risk signals, C = counts (e.g. addresses "
-                    "linked to the card), D = time gaps in days, M = match "
-                    "checks (e.g. name vs card)."
+                    f"Green does not mean \"safe\": it means this detail is "
+                    f"less risky than in an average transaction. A past fraud "
+                    f"rate of {TYPICAL_RATE:.1%} means no fraud is known yet "
+                    f"for this customer or card. V, C, D and M details are "
+                    f"anonymised by the dataset provider: V = risk signals "
+                    f"(\"Sum of top risk signals\" adds the 10 most "
+                    f"fraud-related ones), C = counts (e.g. addresses linked "
+                    f"to the card; 0 is rare and risky), D = time gaps in "
+                    f"days, M = match checks (e.g. name vs card)."
                 )
 
     st.markdown("**Step 4 (optional) — See how one detail changes the risk**")
