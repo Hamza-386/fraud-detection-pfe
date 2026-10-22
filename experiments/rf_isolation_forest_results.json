@@ -1,0 +1,46 @@
+[
+ {
+  "model": "RandomForest (leaf=20)",
+  "val_auc": 0.924508932730428,
+  "test_auc": 0.8974872477213518,
+  "test_ap": 0.47647636525288134,
+  "f1_threshold": 0.5899999999999997,
+  "precision": 0.5207570207570208,
+  "recall": 0.4197834645669291,
+  "f1": 0.464850136239782,
+  "profit_threshold": 0.46,
+  "profit_alert_rate": 0.05481423781623599,
+  "profit_tp": 2159,
+  "profit_fp": 4315,
+  "net_benefit": 1036350,
+  "train_time_s": 242.35491943359375,
+  "top_features": {
+   "C13": 0.021,
+   "C14": 0.0181,
+   "D1_norm": 0.0136,
+   "V_top_mean": 0.0135,
+   "V_top_sum": 0.0129,
+   "C5": 0.0122,
+   "V30": 0.0113,
+   "V_top_max": 0.0102,
+   "uid_amt_mean": 0.0095,
+   "V317": 0.0094
+  }
+ },
+ {
+  "model": "IsolationForest (fit on legit, max_samples=256)",
+  "val_auc": 0.7754523562156262,
+  "test_auc": 0.770202912168587,
+  "test_ap": 0.1214359664981873,
+  "f1_threshold": 0.5043579611667194,
+  "precision": 0.19181197877179681,
+  "recall": 0.3112696850393701,
+  "f1": 0.23735810113519093,
+  "profit_threshold": 0.4804030792625202,
+  "profit_alert_rate": 0.07405933552341924,
+  "profit_tp": 1517,
+  "profit_fp": 7230,
+  "net_benefit": 686200,
+  "train_time_s": 2.867762327194214
+ }
+]
