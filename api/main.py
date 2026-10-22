@@ -1,40 +1,40 @@
 """
-FastAPI - Service de Détection de Fraude en Temps Réel (sécurisé)
-Projet PFE - Hamza Chaabene - TEK-UP / Capgemini
+FastAPI - Real-Time Fraud Detection Service (secured)
+PFE project - Hamza Chaabene - TEK-UP / Capgemini
 
-Charge le modèle de production produit par la CELL 18 du notebook
-et expose des endpoints REST protégés pour la prédiction.
+Loads the production model produced by CELL 18 of the notebook and
+exposes protected REST endpoints for prediction.
 
-Modèle de production (clé "production_model" de thresholds.json,
-modifiable via la variable d'environnement FRAUD_MODEL) :
-- "stacking" : LightGBM + XGBoost + CatBoost (modèles complets de la
-  CELL 13B) combinés par une régression logistique
-  (stack_*_model.pkl + catboost_model.cbm, voir stacking_config.json)
-- "catboost" : CatBoost seul (catboost_model.cbm)
+Production model ("production_model" key of thresholds.json, can be
+overridden with the FRAUD_MODEL environment variable):
+- "stacking": LightGBM + XGBoost + CatBoost (full models of CELL 13B)
+  combined by a logistic regression
+  (stack_*_model.pkl + catboost_model.cbm, see stacking_config.json)
+- "catboost": CatBoost alone (catboost_model.cbm)
 
-Les features absentes de la requête sont complétées avec les valeurs
-d'entraînement de preprocessing.pkl (médiane d'entraînement, ou taux
-de fraude global pour les colonnes target-encodées).
+Features missing from a request are filled with the training values of
+preprocessing.pkl (training median, or global fraud rate for the
+target-encoded columns).
 
-Sécurité:
-- Authentification par clé API (header X-API-Key), lue depuis un
-  fichier .env (voir .env.example) via python-dotenv — jamais
-  codée en dur dans le code source.
-- Limitation du débit (rate limiting) par IP
-- Validation stricte des entrées (valeurs finies, dict non vide)
+Security:
+- API key authentication (X-API-Key header), read from a .env file
+  (see .env.example) with python-dotenv — never hard-coded in the
+  source code.
+- Rate limiting per IP
+- Strict input validation (finite values, non-empty dict)
 
-Décision à trois niveaux (au lieu d'un seuil binaire) :
-- proba <  seuil_review (profit-optimisé)      -> auto_approve
-- seuil_review <= proba < seuil_block (F1-opt.) -> manual_review
-- proba >= seuil_block                          -> auto_block
+Three-tier decision (instead of a binary threshold):
+- proba <  review_threshold (profit-optimized)      -> auto_approve
+- review_threshold <= proba < block_threshold (F1)  -> manual_review
+- proba >= block_threshold                          -> auto_block
 
-Lancer avec:
+Run with:
     uvicorn api.main:app --reload --port 8000
 
-Configuration de la clé API (recommandé) :
-    1. Copier .env.example vers .env : cp .env.example .env
-    2. Éditer .env et remplacer la valeur de FRAUD_API_KEY
-    3. Le fichier .env n'est jamais versionné (voir .gitignore)
+API key configuration (recommended):
+    1. Copy .env.example to .env: cp .env.example .env
+    2. Edit .env and replace the value of FRAUD_API_KEY
+    3. The .env file is never versioned (see .gitignore)
 """
 import json
 import logging
@@ -60,13 +60,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 # ============================================
-# Journalisation (traçabilité des prédictions)
+# Logging (traceability of predictions)
 # ============================================
-# Exigence EF-09 / section 5.2 du Cahier des Charges : chaque
-# prédiction doit être journalisée pour audit. Un fichier de logs
-# rotatif simple suffit pour ce prototype ; en production, ceci
-# serait typiquement redirigé vers un système centralisé (ELK,
-# CloudWatch, etc.).
+# Every prediction is logged for audit. A simple log file is enough
+# for this prototype; in production, this would typically be sent to
+# a centralized system (ELK, CloudWatch, etc.).
 LOG_PATH = os.getenv("FRAUD_LOG_PATH", "predictions.log")
 
 logger = logging.getLogger("fraud_api")
@@ -80,7 +78,7 @@ if not logger.handlers:
 
 
 def _log_prediction(endpoint: str, proba: float, decision: str) -> None:
-    """Journalise une prédiction individuelle pour audit ultérieur."""
+    """Logs a single prediction for later audit."""
     logger.info(
         json.dumps({
             "endpoint": endpoint,
@@ -90,10 +88,9 @@ def _log_prediction(endpoint: str, proba: float, decision: str) -> None:
         })
     )
 
-# Charge les variables du fichier .env (s'il existe) dans
-# les variables d'environnement du processus, AVANT de les lire
-# ci-dessous avec os.getenv(). N'écrase pas une variable
-# d'environnement déjà définie par le système.
+# Loads the variables of the .env file (if it exists) into the process
+# environment, BEFORE they are read below with os.getenv(). Does not
+# override a variable already set by the system.
 load_dotenv()
 
 # ============================================
@@ -106,20 +103,20 @@ MODELS_DIR = os.getenv("MODELS_DIR", os.path.join(
 DEFAULT_API_KEY = "dev-only-change-me"
 API_KEY = os.getenv("FRAUD_API_KEY", DEFAULT_API_KEY)
 MAX_BATCH_SIZE = 500
-# Temps réel : état en ligne (historique par carte / client) construit
-# par scripts/build_online_state.py. Absent -> /predict/raw indisponible.
+# Real time: online state (history per card / customer) built by
+# scripts/build_online_state.py. Missing -> /predict/raw unavailable.
 ONLINE_STATE_PATH = os.getenv(
     "FRAUD_ONLINE_STATE", os.path.join(MODELS_DIR, "online_state.pkl")
 )
-# /predict/raw est appelé pour CHAQUE paiement par le serveur de
-# paiement (une seule IP) : sa limite est celle d'un flux, pas d'un humain.
+# /predict/raw is called for EVERY payment by the payment server
+# (a single IP): its limit is that of a stream, not of a human.
 STREAM_RATE_LIMIT = os.getenv("FRAUD_STREAM_RATE_LIMIT", "6000/minute")
 
 limiter = Limiter(key_func=get_remote_address)
 
-# État global chargé au démarrage
-# `model` = CatBoost : modèle de production en mode "catboost",
-# modèle de base (et modèle expliqué par SHAP) en mode "stacking".
+# Global state loaded at startup
+# `model` = CatBoost: production model in "catboost" mode, base model
+# (and the model explained by SHAP) in "stacking" mode.
 model: Optional[CatBoostClassifier] = None
 feature_names: List[str] = []
 thresholds: Dict[str, float] = {}
@@ -131,32 +128,32 @@ production_model: str = "catboost"
 stack_base_models: Dict[str, object] = {}   # "lgb" / "xgb" (CatBoost = model)
 stack_meta_model = None
 stack_input_order: List[str] = []
-default_values: Dict[str, float] = {}       # valeurs de complétion des features
-# Moteur de features en ligne (realtime.engine.OnlineFeatureEngine) ; son
-# état est partagé entre requêtes, d'où le verrou.
+default_values: Dict[str, float] = {}       # fill values for missing features
+# Online feature engine (realtime.engine.OnlineFeatureEngine); its state
+# is shared between requests, hence the lock.
 online_engine = None
 engine_lock = threading.Lock()
 
-# Bornes du système de décision à 3 niveaux (calculées au démarrage
-# à partir de thresholds.json, avec repli si les clés sont absentes)
-REVIEW_LOWER: float = 0.3   # sous ce seuil : auto_approve
-BLOCK_UPPER: float = 0.7    # au-dessus : auto_block
+# Bounds of the 3-tier decision system (computed at startup from
+# thresholds.json, with a fallback if the keys are missing)
+REVIEW_LOWER: float = 0.3   # below this threshold: auto_approve
+BLOCK_UPPER: float = 0.7    # at or above: auto_block
 
 
 def _load_default_values(path: str) -> Dict[str, float]:
     """
-    Valeurs utilisées pour compléter les features absentes d'une
-    requête, identiques à celles du notebook :
-    - médiane d'entraînement (CELL 10) pour les colonnes imputées ;
-    - taux de fraude global des encodeurs (CELL 13B) pour les colonnes
-      target-encodées et uid_target_enc — c'est exactement la valeur
-      qu'obtient une clé inconnue.
-    Les autres colonnes (jamais manquantes à l'entraînement) -> 0.0.
+    Values used to fill the features missing from a request, the same
+    as in the notebook:
+    - training median (CELL 10) for the imputed columns;
+    - global fraud rate of the encoders (CELL 13B) for the
+      target-encoded columns and uid_target_enc — exactly the value an
+      unknown key receives.
+    Other columns (never missing in training) -> 0.0.
     """
     if not os.path.exists(path):
         print(
-            f"⚠️  {path} introuvable — les features absentes seront "
-            f"complétées avec 0.0."
+            f"⚠️  {path} not found — missing features will be "
+            f"filled with 0.0."
         )
         return {}
     preprocessing = joblib.load(path)
@@ -167,26 +164,26 @@ def _load_default_values(path: str) -> Dict[str, float]:
     for col, encoder in preprocessing["te_encoders"].items():
         target_col = "uid_target_enc" if col == "uid" else col
         defaults[target_col] = float(encoder[2])   # global_mean
-    print(f"✅ Valeurs de complétion chargées ({len(defaults)} features)")
+    print(f"✅ Fill values loaded ({len(defaults)} features)")
     return defaults
 
 
 def _load_stacking() -> None:
-    """Charge les modèles de base LightGBM / XGBoost et le méta-modèle."""
+    """Loads the LightGBM / XGBoost base models and the meta-model."""
     global stack_base_models, stack_meta_model, stack_input_order
 
     config_path = os.path.join(MODELS_DIR, "stacking_config.json")
     if not os.path.exists(config_path):
         raise RuntimeError(
-            f"❌ {config_path} introuvable: le mode 'stacking' exige les "
-            f"fichiers produits par la CELL 18 du notebook."
+            f"❌ {config_path} not found: 'stacking' mode needs the "
+            f"files produced by CELL 18 of the notebook."
         )
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    # CatBoost (déjà chargé dans `model`) est le 3e modèle de base
+    # CatBoost (already loaded in `model`) is the 3rd base model
     if config["base_models"].get("catboost") != "catboost_model.cbm":
-        raise RuntimeError("❌ stacking_config.json: modèle CatBoost inattendu.")
+        raise RuntimeError("❌ stacking_config.json: unexpected CatBoost model.")
 
     stack_base_models = {
         name: joblib.load(os.path.join(MODELS_DIR, filename))
@@ -202,10 +199,10 @@ def _load_stacking() -> None:
     if set(stack_input_order) != expected:
         raise RuntimeError(
             f"❌ stacking_config.json: meta_input_order "
-            f"{stack_input_order} ne correspond pas aux modèles {expected}."
+            f"{stack_input_order} does not match the models {expected}."
         )
     print(
-        f"✅ Stacking chargé : {' + '.join(stack_input_order)} "
+        f"✅ Stacking loaded: {' + '.join(stack_input_order)} "
         f"-> {type(stack_meta_model).__name__}"
     )
 
@@ -213,11 +210,10 @@ def _load_stacking() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """
-    Gestionnaire de cycle de vie moderne de FastAPI (remplace
-    @app.on_event("startup"), déprécié). Le code avant `yield`
-    s'exécute au démarrage ; après `yield`, à l'arrêt (rien à faire
-    ici, mais le point d'extension existe si besoin plus tard, ex.
-    fermeture propre d'une connexion base de données).
+    Modern FastAPI lifespan handler (replaces the deprecated
+    @app.on_event("startup")). The code before `yield` runs at startup;
+    after `yield`, at shutdown (nothing to do here, but the extension
+    point exists if needed later, e.g. closing a database connection).
     """
     global model, feature_names, thresholds, explainer
     global REVIEW_LOWER, BLOCK_UPPER
@@ -226,10 +222,9 @@ async def lifespan(_app: FastAPI):
 
     if API_KEY == DEFAULT_API_KEY:
         print(
-            "⚠️  ATTENTION: FRAUD_API_KEY non définie — utilisation "
-            "d'une clé par défaut non sécurisée. Définissez la "
-            "variable d'environnement FRAUD_API_KEY avant tout usage "
-            "hors développement local."
+            "⚠️  WARNING: FRAUD_API_KEY is not set — using an insecure "
+            "default key. Set the FRAUD_API_KEY environment variable "
+            "before any use outside local development."
         )
 
     model_path = os.path.join(MODELS_DIR, "catboost_model.cbm")
@@ -238,9 +233,9 @@ async def lifespan(_app: FastAPI):
 
     if not os.path.exists(model_path):
         raise RuntimeError(
-            f"❌ Modèle introuvable: {model_path}\n"
-            f"Vérifiez que le dossier 'models/' (téléchargé depuis "
-            f"Kaggle) est bien placé à la racine du projet."
+            f"❌ Model not found: {model_path}\n"
+            f"Check that the 'models/' folder (produced by CELL 18 of "
+            f"the notebook) is at the root of the project."
         )
 
     model = CatBoostClassifier()
@@ -252,7 +247,7 @@ async def lifespan(_app: FastAPI):
     with open(thresholds_path, "r", encoding="utf-8") as f:
         thresholds = json.load(f)
 
-    print(f"✅ Modèle CatBoost chargé ({len(feature_names)} features)")
+    print(f"✅ CatBoost model loaded ({len(feature_names)} features)")
 
     default_values = _load_default_values(
         os.path.join(MODELS_DIR, "preprocessing.pkl")
@@ -263,37 +258,36 @@ async def lifespan(_app: FastAPI):
     ).strip().lower()
     if production_model not in SUPPORTED_MODELS:
         raise RuntimeError(
-            f"❌ Modèle de production inconnu: '{production_model}' "
-            f"(valeurs acceptées: {', '.join(SUPPORTED_MODELS)})"
+            f"❌ Unknown production model: '{production_model}' "
+            f"(accepted values: {', '.join(SUPPORTED_MODELS)})"
         )
     if production_model == "stacking":
         _load_stacking()
 
-    print(f"✅ Modèle de production : {production_model}")
+    print(f"✅ Production model: {production_model}")
     print(
-        "✅ Threshold de production (profit-optimisé): "
+        "✅ Production threshold (profit-optimized): "
         f"{thresholds.get(f'{production_model}_profit_optimized', 0.5)}"
     )
 
-    # REVIEW_LOWER = seuil profit-optimisé (début de la zone de doute)
-    # BLOCK_UPPER  = seuil F1-optimisé, historiquement plus élevé
-    #                (haute confiance -> blocage automatique)
-    # Les deux sont choisis sur la validation par le notebook, pour
-    # le modèle de production lui-même ("stacking" ou "catboost").
+    # REVIEW_LOWER = profit-optimized threshold (start of the doubt zone)
+    # BLOCK_UPPER  = F1-optimized threshold, historically higher
+    #                (high confidence -> automatic block)
+    # Both are chosen on validation by the notebook, for the
+    # production model itself ("stacking" or "catboost").
     REVIEW_LOWER = thresholds.get(f"{production_model}_profit_optimized", 0.3)
     BLOCK_UPPER = thresholds.get(production_model, 0.7)
     if BLOCK_UPPER <= REVIEW_LOWER:
-        # Garde-fou : si les seuils sauvegardés sont incohérents,
-        # on garantit un écart minimal pour que la zone de revue
-        # manuelle existe réellement.
+        # Safeguard: if the saved thresholds are inconsistent, keep a
+        # minimal gap so that the manual review zone really exists.
         BLOCK_UPPER = min(REVIEW_LOWER + 0.3, 0.95)
     print(
-        f"✅ Décision 3 niveaux : auto_approve < {REVIEW_LOWER:.2f} "
+        f"✅ 3-tier decision: auto_approve < {REVIEW_LOWER:.2f} "
         f"<= manual_review < {BLOCK_UPPER:.2f} <= auto_block"
     )
 
     explainer = shap.TreeExplainer(model)
-    print("✅ Explainer SHAP initialisé (TreeExplainer sur CatBoost)")
+    print("✅ SHAP explainer ready (TreeExplainer on CatBoost)")
 
     global online_engine
     if os.path.exists(ONLINE_STATE_PATH):
@@ -301,29 +295,29 @@ async def lifespan(_app: FastAPI):
             online_engine = pickle.load(f)
         if list(online_engine.feature_names) != list(feature_names):
             raise RuntimeError(
-                "❌ online_state.pkl ne correspond pas à feature_names.json : "
-                "relancez scripts/build_online_state.py."
+                "❌ online_state.pkl does not match feature_names.json: "
+                "run scripts/build_online_state.py again."
             )
-        print(f"✅ Moteur temps réel chargé : {online_engine.state_summary()}")
+        print(f"✅ Real-time engine loaded: {online_engine.state_summary()}")
     else:
         online_engine = None
         print(
-            f"ℹ️  {ONLINE_STATE_PATH} absent : /predict/raw désactivé "
-            f"(lancez scripts/build_online_state.py)."
+            f"ℹ️  {ONLINE_STATE_PATH} missing: /predict/raw disabled "
+            f"(run scripts/build_online_state.py)."
         )
 
-    yield  # L'API est prête et sert les requêtes ici
+    yield  # The API is ready and serves requests here
 
-    # --- Code d'arrêt (shutdown) ---
-    print("👋 Arrêt de l'API Fraud Detection")
+    # --- Shutdown code ---
+    print("👋 Fraud Detection API stopping")
 
 
 app = FastAPI(
     title="Fraud Detection API",
     description=(
-        "API de détection de fraude en temps réel (stacking LightGBM + "
-        "XGBoost + CatBoost, ou CatBoost seul) "
-        "- Projet PFE (endpoints protégés par clé API)"
+        "Real-time fraud detection API (stacking of LightGBM + "
+        "XGBoost + CatBoost, or CatBoost alone) "
+        "- PFE project (endpoints protected by an API key)"
     ),
     version="1.2.0",
     lifespan=lifespan,
@@ -334,65 +328,62 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.get("/")
 def root():
-    """Redirige les visiteurs humains vers la documentation Swagger."""
+    """Points human visitors to the Swagger documentation."""
     return {"message": "Fraud Detection API", "docs": "/docs"}
 
 
 @app.exception_handler(Exception)
 async def _hide_internal_errors(request: Request, exc: Exception):
     """
-    Évite de renvoyer une trace de pile Python brute (qui pourrait
-    exposer des détails internes) pour toute erreur inattendue non
-    déjà gérée par une HTTPException explicite.
+    Avoids returning a raw Python stack trace (which could expose
+    internal details) for any unexpected error not already handled by
+    an explicit HTTPException.
     """
     from fastapi.responses import JSONResponse
-    logger.error(f"Erreur non gérée sur {request.url.path}: {exc}")
+    logger.error(f"Unhandled error on {request.url.path}: {exc}")
     return JSONResponse(
         status_code=500,
-        content={"detail": "Erreur interne du serveur."},
+        content={"detail": "Internal server error."},
     )
 
 
 # ============================================
-# Sécurité : authentification par clé API
+# Security: API key authentication
 # ============================================
 def verify_api_key(x_api_key: str = Header(default=None)):
-    """Dépendance FastAPI vérifiant l'en-tête X-API-Key."""
+    """FastAPI dependency checking the X-API-Key header."""
     if x_api_key is None:
         raise HTTPException(
             status_code=401,
-            detail="En-tête 'X-API-Key' manquant.",
+            detail="Missing 'X-API-Key' header.",
         )
     if x_api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Clé API invalide.")
+        raise HTTPException(status_code=403, detail="Invalid API key.")
     return True
 
 
 # ============================================
-# Schémas Pydantic (avec validation stricte)
+# Pydantic schemas (with strict validation)
 # ============================================
 class Transaction(BaseModel):
     """
-    Une transaction déjà prétraitée : dictionnaire {nom_feature: valeur}.
-    Les features manquantes par rapport à feature_names.json sont
-    automatiquement complétées avec les valeurs d'entraînement
-    (preprocessing.pkl : médiane, ou taux de fraude global pour les
-    colonnes target-encodées).
+    An already preprocessed transaction: dictionary {feature_name: value}.
+    Features missing with respect to feature_names.json are filled
+    automatically with the training values (preprocessing.pkl: median,
+    or global fraud rate for the target-encoded columns).
 
-    Important : card1, card2, addr1, P_emaildomain et uid_target_enc
-    sont des valeurs TARGET-ENCODÉES (taux de fraude lissé, entre 0
-    et 1), pas les identifiants bruts.
+    Important: card1, card2, addr1, P_emaildomain and uid_target_enc
+    are TARGET-ENCODED values (smoothed fraud rate, between 0 and 1),
+    not the raw identifiers.
 
-    Note (limitation assumée du projet): le pipeline complet de
-    feature engineering (UID, target encoding, agrégations, lag/rolling)
-    nécessite l'historique complet des transactions et n'est pas
-    reproduit ici en temps réel. L'API attend donc un vecteur de
-    features déjà calculé (ex: par un job de feature engineering
-    en amont), conformément au périmètre du stage PFE.
+    Note: this schema expects a feature vector that is already computed
+    (e.g. by an upstream feature engineering job). To score a raw
+    transaction, with the features computed from the online history,
+    use /predict/raw.
     """
     features: Dict[str, float] = Field(
         ...,
-        description="Dictionnaire des features prétraitées",
+        description="Dictionary of preprocessed features",
         examples=[{"TransactionAmt": 125.50, "card1_freq": 340}],
     )
 
@@ -400,11 +391,11 @@ class Transaction(BaseModel):
     @classmethod
     def _validate_features(cls, v):
         if not v:
-            raise ValueError("Le dictionnaire de features est vide.")
+            raise ValueError("The feature dictionary is empty.")
         for key, val in v.items():
             if not math.isfinite(val):
                 raise ValueError(
-                    f"Valeur non finie (NaN/inf) pour la feature "
+                    f"Non-finite value (NaN/inf) for feature "
                     f"'{key}'."
                 )
         return v
@@ -417,17 +408,17 @@ class BatchTransactions(BaseModel):
     @classmethod
     def _validate_batch(cls, v):
         if not v:
-            raise ValueError("La liste de transactions est vide.")
+            raise ValueError("The transaction list is empty.")
         if len(v) > MAX_BATCH_SIZE:
             raise ValueError(
-                f"Lot trop volumineux ({len(v)} transactions) — "
-                f"limite: {MAX_BATCH_SIZE}."
+                f"Batch too large ({len(v)} transactions) — "
+                f"limit: {MAX_BATCH_SIZE}."
             )
         for i, feats in enumerate(v):
             for key, val in feats.items():
                 if not math.isfinite(val):
                     raise ValueError(
-                        f"Transaction {i}: valeur non finie pour "
+                        f"Transaction {i}: non-finite value for "
                         f"'{key}'."
                     )
         return v
@@ -438,11 +429,11 @@ RAW_REQUIRED = ("TransactionID", "TransactionDT", "TransactionAmt", "card1")
 
 class RawTransaction(BaseModel):
     """
-    Une transaction BRUTE, telle qu'elle arrive du système de paiement :
-    colonnes de train_transaction.csv + train_identity.csv (sans isFraud).
-    Les colonnes absentes ou nulles sont traitées comme manquantes, comme
-    dans le notebook. Toutes les features (UID, historique de la carte et
-    du client, target encoding, ...) sont calculées en ligne par l'API.
+    A RAW transaction, as it arrives from the payment system: columns
+    of train_transaction.csv + train_identity.csv (without isFraud).
+    Absent or null columns are treated as missing, as in the notebook.
+    All the features (UID, card and customer history, target
+    encoding, ...) are computed online by the API.
     """
     transaction: Dict[str, Union[int, float, str, None]] = Field(
         ...,
@@ -457,31 +448,31 @@ class RawTransaction(BaseModel):
     def _validate_raw(cls, v):
         for key in RAW_REQUIRED:
             if v.get(key) is None:
-                raise ValueError(f"Champ obligatoire manquant : '{key}'.")
+                raise ValueError(f"Missing required field: '{key}'.")
         for key in ("TransactionDT", "TransactionAmt", "card1"):
             val = v[key]
             if isinstance(val, str) or not math.isfinite(val):
-                raise ValueError(f"'{key}' doit être un nombre fini.")
+                raise ValueError(f"'{key}' must be a finite number.")
         if v["TransactionAmt"] < 0 or v["TransactionDT"] < 0:
-            raise ValueError("TransactionAmt et TransactionDT doivent être >= 0.")
+            raise ValueError("TransactionAmt and TransactionDT must be >= 0.")
         for key, val in v.items():
             if isinstance(val, float) and not math.isfinite(val):
-                raise ValueError(f"Valeur non finie pour '{key}'.")
+                raise ValueError(f"Non-finite value for '{key}'.")
         return v
 
 
 class LabelFeedback(BaseModel):
-    """Label confirmé a posteriori (ex : rétrofacturation), qui met à
-    jour l'historique de fraude du client, de la carte, ..."""
+    """Label confirmed afterwards (e.g. a chargeback), which updates the
+    fraud history of the customer, the card, ..."""
     transaction_id: Union[int, str]
     is_fraud: int = Field(..., ge=0, le=1)
 
 
 # ============================================
-# Fonctions utilitaires
+# Helper functions
 # ============================================
 def _complete_row(feats: Dict[str, float]) -> Dict[str, float]:
-    """Vecteur complet : valeur fournie, sinon valeur d'entraînement."""
+    """Full vector: the given value, otherwise the training value."""
     return {
         col: feats.get(col, default_values.get(col, 0.0))
         for col in feature_names
@@ -498,9 +489,9 @@ def _build_batch_matrix(list_feats: List[Dict[str, float]]) -> pd.DataFrame:
 
 
 def _base_predict(base_model, A: np.ndarray) -> np.ndarray:
-    """Probabilité de fraude d'un modèle de base via son booster natif
-    (LightGBM : booster_.predict ; XGBoost : inplace_predict), sans la
-    surcouche scikit-learn. Résultat identique à predict_proba[:, 1]."""
+    """Fraud probability of a base model through its native booster
+    (LightGBM: booster_.predict; XGBoost: inplace_predict), without the
+    scikit-learn wrapper. Same result as predict_proba[:, 1]."""
     if hasattr(base_model, "booster_"):          # LGBMClassifier
         return base_model.booster_.predict(A)
     if hasattr(base_model, "get_booster"):       # XGBClassifier
@@ -510,13 +501,13 @@ def _base_predict(base_model, A: np.ndarray) -> np.ndarray:
 
 def _predict_proba(X: Union[pd.DataFrame, np.ndarray]) -> np.ndarray:
     """
-    Probabilité de fraude du modèle de production.
-    - "catboost" : sortie de CatBoost.
-    - "stacking" : probabilités des 3 modèles de base, combinées par
-      le méta-modèle dans l'ordre de stacking_config.json.
+    Fraud probability of the production model.
+    - "catboost": output of CatBoost.
+    - "stacking": probabilities of the 3 base models, combined by the
+      meta-model in the order of stacking_config.json.
     """
-    # Tableau numpy plutôt que DataFrame : mêmes probabilités, mais la
-    # validation pandas de LightGBM / XGBoost coûtait ~30 ms par appel.
+    # numpy array rather than DataFrame: same probabilities, but the
+    # pandas validation of LightGBM / XGBoost cost ~30 ms per call.
     A = X if isinstance(X, np.ndarray) else X.to_numpy(dtype=np.float64)
     proba_cb = model.predict_proba(A)[:, 1]
     if production_model != "stacking":
@@ -533,12 +524,12 @@ def _predict_proba(X: Union[pd.DataFrame, np.ndarray]) -> np.ndarray:
 
 def _decision(proba: float) -> Dict[str, str]:
     """
-    Détermine l'action opérationnelle à trois niveaux, au lieu d'un
-    simple seuil binaire is_fraud true/false :
-    - auto_approve  : risque faible, transaction traitée normalement
-    - manual_review : zone d'incertitude, à faire vérifier par un
-                       analyste avant décision finale
-    - auto_block     : confiance élevée de fraude, blocage immédiat
+    Determines the three-tier operational action, instead of a simple
+    binary is_fraud true/false threshold:
+    - auto_approve  : low risk, the transaction is processed normally
+    - manual_review : uncertainty zone, to be checked by an analyst
+                      before the final decision
+    - auto_block    : high confidence of fraud, immediate block
     """
     if proba >= BLOCK_UPPER:
         return {"decision": "auto_block", "risk_level": "high"}
@@ -553,9 +544,9 @@ def _decision(proba: float) -> Dict[str, str]:
 @app.get("/health")
 def health():
     """
-    Vérifie que le service et le modèle sont opérationnels.
-    Volontairement PUBLIC (pas de clé requise) pour permettre un
-    monitoring externe simple (ex: load balancer, uptime checker).
+    Checks that the service and the model are operational.
+    Deliberately PUBLIC (no key required) to allow simple external
+    monitoring (e.g. load balancer, uptime checker).
     """
     return {
         "status": "ok" if model is not None else "model_not_loaded",
@@ -568,9 +559,9 @@ def health():
 @app.get("/model/info", dependencies=[Depends(verify_api_key)])
 @limiter.limit("20/minute")
 def model_info(request: Request):
-    """Retourne les métadonnées du modèle chargé. (protégé)"""
+    """Returns the metadata of the loaded model. (protected)"""
     if model is None:
-        raise HTTPException(503, "Modèle non chargé")
+        raise HTTPException(503, "Model not loaded")
     info = {
         "production_model": production_model,
         "model_type": (
@@ -602,9 +593,9 @@ def model_info(request: Request):
 @app.post("/predict", dependencies=[Depends(verify_api_key)])
 @limiter.limit("30/minute")
 def predict(request: Request, tx: Transaction):
-    """Prédit la probabilité de fraude pour UNE transaction. (protégé)"""
+    """Predicts the fraud probability of ONE transaction. (protected)"""
     if model is None:
-        raise HTTPException(503, "Modèle non chargé")
+        raise HTTPException(503, "Model not loaded")
 
     X = _build_feature_vector(tx.features)
     proba = float(_predict_proba(X)[0])
@@ -628,22 +619,21 @@ def predict_explain(
     tx: Transaction,
     top_n: int = Query(
         default=5, ge=1, le=MAX_EXPLAIN_TOP_N,
-        description="Nombre de features les plus contributives à "
-                     "retourner",
+        description="Number of most contributing features to return",
     ),
 ):
     """
-    Prédit la probabilité de fraude ET explique la décision via les
-    valeurs SHAP (contribution de chaque feature à cette transaction
-    précise). Plus coûteux que /predict — usage recommandé pour la
-    revue manuelle des alertes, pas pour le scoring en masse.
+    Predicts the fraud probability AND explains the decision with SHAP
+    values (contribution of each feature to this specific transaction).
+    More expensive than /predict — meant for the manual review of
+    alerts, not for bulk scoring.
 
-    En mode "stacking", la probabilité et la décision sont celles du
-    stacking, mais les valeurs SHAP expliquent le modèle de base
-    CatBoost (le méta-modèle n'a pas d'explication SHAP exacte).
+    In "stacking" mode, the probability and the decision are those of
+    the stacking, but the SHAP values explain the CatBoost base model
+    (the meta-model has no exact SHAP explanation).
     """
     if model is None or explainer is None:
-        raise HTTPException(503, "Modèle ou explainer non chargé")
+        raise HTTPException(503, "Model or explainer not loaded")
 
     X = _build_feature_vector(tx.features)
     proba = float(_predict_proba(X)[0])
@@ -658,8 +648,7 @@ def predict_explain(
         {
             "feature": feat,
             "shap_value": round(float(val), 4),
-            "effect": "augmente_le_risque" if val > 0
-                      else "diminue_le_risque",
+            "effect": "increases_risk" if val > 0 else "decreases_risk",
         }
         for feat, val in contributions[:top_n]
     ]
@@ -681,10 +670,10 @@ def predict_explain(
 @app.post("/predict/batch", dependencies=[Depends(verify_api_key)])
 @limiter.limit("10/minute")
 def predict_batch(request: Request, batch: BatchTransactions):
-    """Prédit la probabilité de fraude pour une LISTE de transactions.
-    (protégé, limité à MAX_BATCH_SIZE transactions par appel)"""
+    """Predicts the fraud probability of a LIST of transactions.
+    (protected, limited to MAX_BATCH_SIZE transactions per call)"""
     if model is None:
-        raise HTTPException(503, "Modèle non chargé")
+        raise HTTPException(503, "Model not loaded")
 
     X = _build_batch_matrix(batch.transactions)
     probas = _predict_proba(X)
@@ -728,16 +717,16 @@ def predict_batch(request: Request, batch: BatchTransactions):
 
 
 # ============================================
-# Temps réel : transactions brutes
+# Real time: raw transactions
 # ============================================
 def _require_engine():
     if model is None:
-        raise HTTPException(503, "Modèle non chargé")
+        raise HTTPException(503, "Model not loaded")
     if online_engine is None:
         raise HTTPException(
             503,
-            "Moteur temps réel non chargé (models/online_state.pkl absent : "
-            "lancez scripts/build_online_state.py).",
+            "Real-time engine not loaded (models/online_state.pkl missing: "
+            "run scripts/build_online_state.py).",
         )
 
 
@@ -745,13 +734,13 @@ def _require_engine():
 @limiter.limit(STREAM_RATE_LIMIT)
 def predict_raw(request: Request, tx: RawTransaction):
     """
-    Score une transaction BRUTE au moment où elle arrive. (protégé)
+    Scores a RAW transaction when it arrives. (protected)
 
-    L'API calcule elle-même les 512 features à partir de son état en
-    ligne (historique de la carte, du client reconstitué, du domaine
-    e-mail, ...), exactement comme le notebook, puis met cet état à jour
-    avec la transaction. Aucun label n'est nécessaire à ce moment : les
-    labels arrivent plus tard via /feedback.
+    The API computes the 512 features itself from its online state
+    (history of the card, of the reconstructed customer, of the email
+    domain, ...), exactly as the notebook does, then updates this state
+    with the transaction. No label is needed at this point: labels
+    arrive later through /feedback.
     """
     _require_engine()
     t0 = time.perf_counter()
@@ -759,7 +748,7 @@ def predict_raw(request: Request, tx: RawTransaction):
     with engine_lock:
         if raw["TransactionID"] in online_engine.pending:
             raise HTTPException(
-                409, f"Transaction {raw['TransactionID']} déjà scorée."
+                409, f"Transaction {raw['TransactionID']} already scored."
             )
         feats, info = online_engine.process(raw, commit=True)
     t1 = time.perf_counter()
@@ -793,17 +782,17 @@ def predict_raw(request: Request, tx: RawTransaction):
 @limiter.limit(STREAM_RATE_LIMIT)
 def feedback(request: Request, fb: LabelFeedback):
     """
-    Label confirmé d'une transaction déjà scorée par /predict/raw
-    (ex : rétrofacturation reçue quelques jours plus tard). Met à jour
-    les taux de fraude passés (target encoding) du client, de la carte,
-    de l'adresse et du domaine e-mail. (protégé)
+    Confirmed label of a transaction already scored by /predict/raw
+    (e.g. a chargeback received a few days later). Updates the past
+    fraud rates (target encoding) of the customer, the card, the
+    address and the email domain. (protected)
     """
     _require_engine()
     with engine_lock:
         ok = online_engine.add_label(fb.transaction_id, fb.is_fraud)
     if not ok:
         raise HTTPException(
-            404, f"Transaction {fb.transaction_id} inconnue ou déjà labellisée."
+            404, f"Transaction {fb.transaction_id} unknown or already labeled."
         )
     return {"transaction_id": fb.transaction_id, "status": "label_recorded"}
 
@@ -811,8 +800,8 @@ def feedback(request: Request, fb: LabelFeedback):
 @app.get("/online/status", dependencies=[Depends(verify_api_key)])
 @limiter.limit("60/minute")
 def online_status(request: Request):
-    """État du moteur temps réel : transactions vues, cartes, clients,
-    labels en attente. (protégé)"""
+    """State of the real-time engine: transactions seen, cards,
+    customers, pending labels. (protected)"""
     _require_engine()
     with engine_lock:
         return online_engine.state_summary()

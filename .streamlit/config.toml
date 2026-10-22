@@ -1,8 +1,8 @@
-# Thème du dashboard Streamlit (lu automatiquement quand
-# `streamlit run dashboard/app.py` est lancé depuis la racine du projet).
+# Theme of the Streamlit dashboard (read automatically when
+# `streamlit run dashboard/app.py` is started from the project root).
 [theme]
 base = "dark"
-primaryColor = "#3B82F6"              # bleu = modèle de production
+primaryColor = "#3B82F6"              # blue = production model
 backgroundColor = "#0F172A"
 secondaryBackgroundColor = "#1E293B"
 textColor = "#E2E8F0"

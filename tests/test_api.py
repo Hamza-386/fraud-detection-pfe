@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-Tests automatisés de l'API de détection de fraude.
-Projet PFE - Hamza Chaabene - TEK-UP / Capgemini
+Automated tests of the fraud detection API.
+PFE project - Hamza Chaabene - TEK-UP / Capgemini
 
-Prérequis : le dossier models/ (téléchargé depuis Kaggle) doit être
-présent à la racine du projet, exactement comme pour lancer l'API
-normalement — ces tests utilisent le VRAI modèle CatBoost, pas un
-mock, afin de valider le comportement réel de bout en bout.
+Prerequisite: the models/ folder (produced by CELL 18 of the notebook)
+must be at the root of the project, exactly as for running the API
+normally — these tests use the REAL CatBoost model, not a mock, to
+check the real end-to-end behavior.
 
-Lancer avec (depuis la racine du projet) :
+Run with (from the project root):
     pytest tests/ -v
 """
 import os
 
-# IMPORTANT : la clé de test doit être définie AVANT d'importer
-# api.main, car API_KEY y est lue une seule fois au chargement du
-# module (os.getenv au niveau module, pas dans une fonction).
+# IMPORTANT: the test key must be set BEFORE importing api.main,
+# because API_KEY is read there only once, when the module is loaded
+# (os.getenv at module level, not inside a function).
 os.environ["FRAUD_API_KEY"] = "test-key-pytest"
 
 import pytest  # noqa: E402
@@ -29,19 +29,19 @@ HEADERS = {"x-api-key": "test-key-pytest"}
 @pytest.fixture(scope="module")
 def client():
     """
-    TestClient utilisé comme context manager pour déclencher les
-    évènements startup/shutdown de FastAPI (chargement réel du
-    modèle, de l'explainer SHAP, etc.).
+    TestClient used as a context manager to trigger the FastAPI
+    startup/shutdown events (real loading of the model, of the SHAP
+    explainer, etc.).
     """
     with TestClient(app) as c:
         yield c
 
 
 # ============================================
-# /health — endpoint public
+# /health — public endpoint
 # ============================================
 def test_health_is_public_and_ok(client):
-    """/health ne doit exiger aucune clé API et confirmer le modèle chargé."""
+    """/health must not require an API key and must confirm the model is loaded."""
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
@@ -50,7 +50,7 @@ def test_health_is_public_and_ok(client):
 
 
 # ============================================
-# Sécurité : authentification par clé API
+# Security: API key authentication
 # ============================================
 def test_predict_without_api_key_is_rejected(client):
     r = client.post("/predict", json={"features": {"TransactionAmt": 50}})
@@ -61,7 +61,7 @@ def test_predict_with_wrong_api_key_is_rejected(client):
     r = client.post(
         "/predict",
         json={"features": {"TransactionAmt": 50}},
-        headers={"x-api-key": "mauvaise-cle"},
+        headers={"x-api-key": "wrong-key"},
     )
     assert r.status_code == 403
 
@@ -72,7 +72,7 @@ def test_model_info_requires_api_key(client):
 
 
 # ============================================
-# Validation des entrées
+# Input validation
 # ============================================
 def test_predict_rejects_empty_features(client):
     r = client.post("/predict", json={"features": {}}, headers=HEADERS)
@@ -92,7 +92,7 @@ def test_batch_rejects_empty_list(client):
 
 
 def test_batch_rejects_oversized_list(client):
-    """Le lot ne doit pas dépasser MAX_BATCH_SIZE (500) transactions."""
+    """A batch must not exceed MAX_BATCH_SIZE (500) transactions."""
     too_many = [{"TransactionAmt": 10.0} for _ in range(501)]
     r = client.post(
         "/predict/batch",
@@ -103,7 +103,7 @@ def test_batch_rejects_oversized_list(client):
 
 
 # ============================================
-# /model/info — cohérence des seuils
+# /model/info — consistency of the thresholds
 # ============================================
 def test_model_info_thresholds_are_consistent(client):
     r = client.get("/model/info", headers=HEADERS)
@@ -111,20 +111,18 @@ def test_model_info_thresholds_are_consistent(client):
     body = r.json()
     lower = body["decision_thresholds"]["auto_approve_below"]
     upper = body["decision_thresholds"]["auto_block_at_or_above"]
-    # Le seuil de blocage doit toujours être strictement supérieur
-    # au seuil d'approbation automatique (garde-fou du système à
-    # 3 niveaux).
+    # The block threshold must always be strictly above the automatic
+    # approval threshold (safeguard of the 3-tier system).
     assert 0.0 <= lower < upper <= 1.0
 
 
 # ============================================
-# /predict — comportement du système à 3 niveaux
+# /predict — behavior of the 3-tier system
 # ============================================
 def test_predict_low_risk_transaction_is_auto_approved(client):
     """
-    uid_target_enc=0.0 (aucun historique de fraude connu) doit
-    produire une décision auto_approve, conformément à la
-    validation manuelle effectuée précédemment.
+    uid_target_enc=0.0 (no known fraud history) must give an
+    auto_approve decision, as checked manually before.
     """
     r = client.post(
         "/predict",
@@ -140,13 +138,13 @@ def test_predict_low_risk_transaction_is_auto_approved(client):
 
 def test_predict_risk_increases_with_uid_fraud_history(client):
     """
-    uid_target_enc élevé (historique de fraude du client) doit
-    augmenter la probabilité de fraude.
+    A high uid_target_enc (customer fraud history) must raise the
+    fraud probability.
 
-    (Remplace l'ancien test « uid_target_enc=0.9 -> auto_block » :
-    il dépendait des features manquantes complétées par 0.0 ; elles
-    sont maintenant complétées par les valeurs d'entraînement, et une
-    seule feature modifiée ne suffit pas à atteindre le blocage.)
+    (Replaces the old "uid_target_enc=0.9 -> auto_block" test: it
+    depended on missing features being filled with 0.0; they are now
+    filled with the training values, and changing a single feature is
+    not enough to reach the block level.)
     """
     def proba(uid_te):
         r = client.post(
@@ -161,7 +159,7 @@ def test_predict_risk_increases_with_uid_fraud_history(client):
 
 
 def test_decision_levels_match_thresholds(client):
-    """Les 3 niveaux suivent exactement les seuils chargés."""
+    """The 3 levels follow the loaded thresholds exactly."""
     from api import main
 
     lower, upper = main.REVIEW_LOWER, main.BLOCK_UPPER
@@ -172,7 +170,7 @@ def test_decision_levels_match_thresholds(client):
 
 
 def test_predict_decision_is_consistent_with_returned_thresholds(client):
-    """La décision renvoyée correspond à la probabilité et aux seuils renvoyés."""
+    """The returned decision matches the returned probability and thresholds."""
     for feats in (
         {"TransactionAmt": 50, "uid_target_enc": 0.0},
         {"TransactionAmt": 500, "uid_target_enc": 1.0, "card1": 0.5,
@@ -189,20 +187,20 @@ def test_predict_decision_is_consistent_with_returned_thresholds(client):
             expected = "manual_review"
         else:
             expected = "auto_approve"
-        # tolérance d'arrondi (probabilité arrondie à 4 décimales)
+        # rounding tolerance (probability rounded to 4 decimals)
         if min(abs(p - t["auto_block_at_or_above"]),
                abs(p - t["auto_approve_below"])) > 1e-4:
             assert body["decision"] == expected
 
 
 # ============================================
-# Complétion des features & modèle de production
+# Feature completion & production model
 # ============================================
 def test_missing_features_are_filled_with_training_values(client):
     """
-    Les features absentes prennent la valeur d'entraînement
-    (preprocessing.pkl), pas 0.0 : uid_target_enc absent = taux de
-    fraude global (~3.5 %), comme une clé inconnue dans le notebook.
+    Missing features take the training value (preprocessing.pkl), not
+    0.0: a missing uid_target_enc = global fraud rate (~3.5%), like an
+    unknown key in the notebook.
     """
     from api import main
 
@@ -223,12 +221,12 @@ def test_model_info_reports_production_model(client):
 
 
 def test_stacking_combines_the_three_base_models(client):
-    """En mode stacking : proba = méta-modèle(P_lgb, P_xgb, P_catboost)."""
+    """In stacking mode: proba = meta-model(P_lgb, P_xgb, P_catboost)."""
     import numpy as np
     from api import main
 
     if main.production_model != "stacking":
-        pytest.skip("API en mode catboost")
+        pytest.skip("API in catboost mode")
     X = main._build_feature_vector({"TransactionAmt": 300.0, "uid_target_enc": 0.5})
     base = {
         "lgb": main.stack_base_models["lgb"].predict_proba(X)[:, 1],
@@ -259,13 +257,12 @@ def test_predict_response_contains_expected_fields(client):
 
 def test_predict_ignores_unknown_feature_names(client):
     """
-    Une feature inconnue (absente de feature_names.json) ne doit pas
-    faire planter l'API — elle doit simplement être ignorée lors de
-    la construction du vecteur.
+    An unknown feature (absent from feature_names.json) must not crash
+    the API — it must simply be ignored when the vector is built.
     """
     r = client.post(
         "/predict",
-        json={"features": {"colonne_qui_nexiste_pas": 42.0}},
+        json={"features": {"column_that_does_not_exist": 42.0}},
         headers=HEADERS,
     )
     assert r.status_code == 200
@@ -310,13 +307,13 @@ def test_predict_explain_returns_top_features(client):
     body = r.json()
     assert "top_contributing_features" in body
     assert len(body["top_contributing_features"]) <= 3
-    # mêmes champs de décision que /predict (utilisés par le dashboard)
+    # same decision fields as /predict (used by the dashboard)
     for field in ("fraud_probability", "decision", "risk_level", "thresholds"):
         assert field in body
     for feat in body["top_contributing_features"]:
         assert "feature" in feat
         assert "shap_value" in feat
-        assert feat["effect"] in ("augmente_le_risque", "diminue_le_risque")
+        assert feat["effect"] in ("increases_risk", "decreases_risk")
 
 
 def test_predict_explain_top_n_out_of_range_is_rejected(client):

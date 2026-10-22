@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Tests du mode temps réel : /predict/raw, /feedback, /online/status.
+Tests of the real-time mode: /predict/raw, /feedback, /online/status.
 
-Prérequis : models/online_state.pkl et models/example_raw_transactions.json,
-produits par `python scripts/build_online_state.py`. Sans eux, ces tests
-sont ignorés (skip).
+Prerequisite: models/online_state.pkl and models/example_raw_transactions.json,
+produced by `python scripts/build_online_state.py`. Without them, these
+tests are skipped.
 """
 import copy
 import json
@@ -24,7 +24,7 @@ RAW_PATH = os.path.join(MODELS, "example_raw_transactions.json")
 pytestmark = pytest.mark.skipif(
     not (os.path.exists(os.path.join(MODELS, "online_state.pkl"))
          and os.path.exists(RAW_PATH)),
-    reason="état en ligne absent : lancer scripts/build_online_state.py",
+    reason="online state missing: run scripts/build_online_state.py",
 )
 
 
@@ -56,8 +56,8 @@ def test_predict_raw_requires_api_key(client, raw_examples):
 
 
 def test_predict_raw_computes_features_online(client, raw_examples):
-    """Une transaction brute est scorée ; la réponse donne la décision,
-    l'historique du client et le temps de calcul."""
+    """A raw transaction is scored; the response gives the decision,
+    the customer history and the computation time."""
     r = client.post("/predict/raw", headers=HEADERS,
                     json={"transaction": _tx(raw_examples[2], 900002)})
     assert r.status_code == 200, r.text
@@ -70,8 +70,8 @@ def test_predict_raw_computes_features_online(client, raw_examples):
 
 
 def test_predict_raw_updates_the_history(client, raw_examples):
-    """La même carte, vue une 2e fois, a une transaction de plus dans
-    son historique : l'état en ligne est mis à jour à chaque appel."""
+    """The same card, seen a 2nd time, has one more transaction in its
+    history: the online state is updated at every call."""
     first = client.post("/predict/raw", headers=HEADERS,
                         json={"transaction": _tx(raw_examples[0], 900003)}).json()
     tx = _tx(raw_examples[0], 900004)
@@ -102,8 +102,8 @@ def test_predict_raw_rejects_negative_amount(client, raw_examples):
 
 
 def test_feedback_raises_the_customer_fraud_rate(client, raw_examples):
-    """Un label de fraude confirmé augmente le taux de fraude passé du
-    client pour sa transaction suivante."""
+    """A confirmed fraud label raises the customer's past fraud rate
+    for their next transaction."""
     base = raw_examples[0]
     before = client.post("/predict/raw", headers=HEADERS,
                          json={"transaction": _tx(base, 900010)}).json()

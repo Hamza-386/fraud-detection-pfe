@@ -670,8 +670,8 @@ with tab_check:
                     for n in why["feature"]
                 ]
                 why["effect_label"] = why["effect"].map({
-                    "augmente_le_risque": "Raises the risk",
-                    "diminue_le_risque": "Lowers the risk",
+                    "increases_risk": "Raises the risk",
+                    "decreases_risk": "Lowers the risk",
                 })
                 fig_why = px.bar(
                     why.sort_values("shap_value", key=abs),
