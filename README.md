@@ -4,7 +4,7 @@ PFE project — Hamza Chaabene — TEK-UP University × Capgemini
 
 ## 🎬 Video demo
 
-[▶️ Watch the demo (6 min 53, narrated in English)](docs/demo.mp4) — a real screen recording: the FastAPI API (Swagger), then the 5 dashboard tabs (Overview, Live stream, Check a transaction, Model comparison, Explore data).
+[▶️ Watch the demo (6 min 54, narrated in English)](docs/demo.mp4) — a real screen recording: the FastAPI API (Swagger), then the 5 dashboard tabs (Overview, Live stream, Check a transaction, Model comparison, Explore data).
 
 ## 📁 Structure
 
